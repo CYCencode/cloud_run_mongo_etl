@@ -1,9 +1,9 @@
-# main.py
 import os
 import sys
 from datetime import datetime, timezone
 from pymongo import MongoClient
-from pymongo.errors import ConnectionError
+# 修正點 1: ConnectionError 在 PyMongo v4.x 中已被 ConnectionFailure 取代
+from pymongo.errors import ConnectionFailure, PyMongoError 
 
 # --- 日誌記錄函式 (Log to Mongo with Fallback) ---
 def log_to_mongo(log_level: str, message: str, details=None):
@@ -55,9 +55,13 @@ def log_to_mongo(log_level: str, message: str, details=None):
         db = client[MONGO_DB_NAME]
         db[MONGO_COLLECTION].insert_one(log_entry)
         
-    except Exception as e:
+    # 修正點 2: 使用 PyMongoError 來捕獲所有連線和操作錯誤
+    except PyMongoError as e: 
         # 如果 MongoDB 寫入失敗，則退回到標準輸出進行緊急日誌記錄
         print(f"[MONGO_FAILOVER - {log_level}] {fallback_message} (Mongo Write Error: {e})", file=sys.stderr)
+    except Exception as e:
+        # 捕獲所有非 PyMongo 相關的未知錯誤
+        print(f"[UNEXPECTED_FAILOVER - {log_level}] {fallback_message} (Unexpected Error: {e})", file=sys.stderr)
     finally:
         if client:
             client.close()
@@ -96,10 +100,16 @@ def run_psc_mvp_test():
         print("==================================================")
         sys.exit(0)
 
-    except ConnectionError as e:
+    # 修正點 3: 捕獲 ConnectionFailure (取代 ConnectionError)
+    except ConnectionFailure as e: 
         # 連線失敗時，寫入 ERROR 日誌 (會觸發 fallback 到 stderr)
         log_to_mongo("ERROR", "PSC Connection Test FAILED", 
                      details={"error_message": f"Connection Error: {e}"})
+        sys.exit(1)
+    except PyMongoError as e:
+        # 捕獲其他所有 MongoDB 錯誤 (例如認證失敗)
+        log_to_mongo("CRITICAL", "MongoDB operation failed unexpectedly", 
+                     details={"error_message": str(e)})
         sys.exit(1)
     except Exception as e:
         # 其他錯誤
